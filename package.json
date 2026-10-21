@@ -1,22 +1,7 @@
 {
-	"name": "workflows-starter-template",
+	"name": "cosmos-video-server",
 	"private": true,
-	"description": "Interactive starter template demonstrating Cloudflare Workflows with real-time status updates",
-	"cloudflare": {
-		"label": "Workflows Starter",
-		"products": [
-			"Workers",
-			"Workflows",
-			"Durable Objects"
-		],
-		"categories": [
-			"starter"
-		],
-		"publish": true,
-		"preview_image_url": "https://imagedelivery.net/wSMYJvS3Xw-n339CbDyDIA/4380d39a-b907-437c-e784-500fcc10cb00/preview",
-		"preview_icon_url": "https://imagedelivery.net/wSMYJvS3Xw-n339CbDyDIA/6d6e9a49-5c10-4ef6-bfa8-b6577a656300/public",
-		"docs_url": "https://developers.cloudflare.com/workflows/"
-	},
+	"description": "Phone-friendly server for WaveSpeed AI Cosmos Predict 2.5 text-to-video",
 	"type": "module",
 	"scripts": {
 		"dev": "vite",

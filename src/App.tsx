@@ -1,121 +1,287 @@
-import { useState, useEffect } from "react";
-import { WorkflowDiagram } from "./components/WorkflowDiagram";
-import { CodeDisplay } from "./components/CodeDisplay";
-import { BackgroundDots } from "./components/BackgroundDots";
-import { useWorkflowWebSocket } from "./hooks/useWorkflowWebSocket";
-import { WORKFLOW_STEPS } from "./types";
+import { useCallback, useEffect, useRef, useState } from "react";
 
-function App() {
-	const [instanceId, setInstanceId] = useState<string | null>(null);
-	const [isStarting, setIsStarting] = useState(false);
-	const workflowState = useWorkflowWebSocket(instanceId);
+type Job = {
+	id: string;
+	prompt: string;
+	status: string;
+	outputs: string[];
+	error: string | null;
+	createdAt: number;
+};
 
-	useEffect(() => {
-		if (workflowState.workflowStatus === "completed") {
-			const timer = setTimeout(() => {
-				setInstanceId(null);
-			}, 1500);
-			return () => clearTimeout(timer);
-		}
-	}, [workflowState.workflowStatus]);
+const PASSWORD_KEY = "cosmos.password";
+const JOBS_KEY = "cosmos.jobs";
+const POLL_MS = 4000;
+const FAILED = ["failed", "cancelled", "timeout", "deleted"];
 
-	useEffect(() => {
-		if (
-			workflowState.workflowStatus === "running" &&
-			workflowState.currentStep
-		) {
-			setIsStarting(false);
-		}
-	}, [workflowState.workflowStatus, workflowState.currentStep]);
+function load<T>(key: string, fallback: T): T {
+	try {
+		const raw = localStorage.getItem(key);
+		return raw ? (JSON.parse(raw) as T) : fallback;
+	} catch {
+		return fallback;
+	}
+}
 
-	const handleStartWorkflow = async () => {
-		setIsStarting(true);
+function save(key: string, value: unknown) {
+	try {
+		localStorage.setItem(key, JSON.stringify(value));
+	} catch {
+		// Storage full or blocked; the app still works for this session
+	}
+}
 
+const isDone = (job: Job) => job.status === "completed" || FAILED.includes(job.status);
+
+async function api<T>(
+	path: string,
+	password: string,
+	init?: RequestInit,
+): Promise<T> {
+	const res = await fetch(path, {
+		...init,
+		headers: {
+			Authorization: `Bearer ${password}`,
+			"Content-Type": "application/json",
+		},
+	});
+	const data = await res.json().catch(() => ({}));
+	if (!res.ok) {
+		const err = new Error(data.error || `Request failed (${res.status})`);
+		(err as Error & { status?: number }).status = res.status;
+		throw err;
+	}
+	return data as T;
+}
+
+function PasswordScreen({ onUnlock }: { onUnlock: (pw: string) => void }) {
+	const [value, setValue] = useState("");
+	const [error, setError] = useState<string | null>(null);
+	const [busy, setBusy] = useState(false);
+
+	const submit = async (e: React.FormEvent) => {
+		e.preventDefault();
+		setBusy(true);
+		setError(null);
 		try {
-			const response = await fetch("/api/workflow/start", {
-				method: "POST",
-			});
-
-			if (!response.ok) {
-				throw new Error("Failed to start workflow");
-			}
-
-			const data = await response.json();
-			setInstanceId(data.instanceId);
-		} catch {
-			alert("Failed to start workflow. Please try again.");
-			setIsStarting(false);
+			await api("/api/auth", value, { method: "POST" });
+			onUnlock(value);
+		} catch (err) {
+			setError((err as Error).message);
+		} finally {
+			setBusy(false);
 		}
 	};
 
 	return (
-		<div className="min-h-screen bg-neutral-50/30 dark:bg-neutral-950 flex flex-col relative">
-			{/* Background dots across entire page */}
-			<div className="absolute inset-0 text-neutral-200/50 dark:text-neutral-700/40 overflow-hidden">
-				<BackgroundDots />
+		<form onSubmit={submit} className="flex flex-col gap-3 mt-16">
+			<h2 className="text-xl font-semibold">Enter password</h2>
+			<p className="text-sm text-neutral-500 dark:text-neutral-400">
+				This is the ACCESS_PASSWORD you set on the server.
+			</p>
+			<input
+				type="password"
+				autoComplete="current-password"
+				value={value}
+				onChange={(e) => setValue(e.target.value)}
+				className="input"
+				placeholder="Password"
+			/>
+			{error && <p className="text-sm text-red-600 dark:text-red-400">{error}</p>}
+			<button type="submit" disabled={!value || busy} className="btn">
+				{busy ? "Checking…" : "Unlock"}
+			</button>
+		</form>
+	);
+}
+
+function JobCard({ job, onRemove }: { job: Job; onRemove: () => void }) {
+	const video = job.outputs[0];
+	const failed = FAILED.includes(job.status);
+
+	return (
+		<li className="card">
+			<p className="text-sm whitespace-pre-wrap break-words">{job.prompt}</p>
+
+			{video ? (
+				<video
+					src={video}
+					controls
+					playsInline
+					loop
+					className="w-full rounded-lg mt-3 bg-black"
+				/>
+			) : (
+				<div className="mt-3 rounded-lg aspect-video flex items-center justify-center bg-neutral-100 dark:bg-neutral-800 text-sm text-neutral-500 dark:text-neutral-400">
+					{failed ? (
+						<span className="text-red-600 dark:text-red-400 px-4 text-center">
+							{job.status}: {job.error || "no details"}
+						</span>
+					) : (
+						<span className="flex items-center gap-2">
+							<span className="spinner" /> Generating ({job.status})…
+						</span>
+					)}
+				</div>
+			)}
+
+			<div className="flex items-center justify-between mt-3 text-xs text-neutral-500 dark:text-neutral-400">
+				<span>{new Date(job.createdAt).toLocaleString()}</span>
+				<div className="flex gap-4">
+					{video && (
+						<a href={video} target="_blank" rel="noopener noreferrer" download className="link">
+							Open / save
+						</a>
+					)}
+					<button onClick={onRemove} className="link">
+						Remove
+					</button>
+				</div>
 			</div>
+		</li>
+	);
+}
 
-			{/* Minimal Integrated Header */}
-			<header className="px-6 pt-6 pb-4 relative z-10">
-				<div className="flex items-center justify-between">
-					<div className="flex items-center gap-3">
-						<svg
-							role="img"
-							viewBox="0 0 460 271.2"
-							aria-hidden="true"
-							className="h-5 w-auto opacity-90"
-						>
-							<path
-								fill="#FBAD41"
-								d="M328.6,125.6c-0.8,0-1.5,0.6-1.8,1.4l-4.8,16.7c-2.1,7.2-1.3,13.8,2.2,18.7c3.2,4.5,8.6,7.1,15.1,7.4l26.2,1.6c0.8,0,1.5,0.4,1.9,1c0.4,0.6,0.5,1.5,0.3,2.2c-0.4,1.2-1.6,2.1-2.9,2.2l-27.3,1.6c-14.8,0.7-30.7,12.6-36.3,27.2l-2,5.1c-0.4,1,0.3,2,1.4,2h93.8c1.1,0,2.1-0.7,2.4-1.8c1.6-5.8,2.5-11.9,2.5-18.2c0-37-30.2-67.2-67.3-67.2C330.9,125.5,329.7,125.5,328.6,125.6z"
+function App() {
+	const [password, setPassword] = useState<string | null>(() =>
+		load<string | null>(PASSWORD_KEY, null),
+	);
+	const [jobs, setJobs] = useState<Job[]>(() => load<Job[]>(JOBS_KEY, []));
+	const [prompt, setPrompt] = useState("");
+	const [submitting, setSubmitting] = useState(false);
+	const [error, setError] = useState<string | null>(null);
+	const jobsRef = useRef(jobs);
+	jobsRef.current = jobs;
+
+	useEffect(() => save(JOBS_KEY, jobs), [jobs]);
+
+	const unlock = (pw: string) => {
+		save(PASSWORD_KEY, pw);
+		setPassword(pw);
+	};
+
+	const lock = useCallback(() => {
+		try {
+			localStorage.removeItem(PASSWORD_KEY);
+		} catch {
+			// Ignore
+		}
+		setPassword(null);
+	}, []);
+
+	const updateJob = (id: string, patch: Partial<Job>) =>
+		setJobs((list) => list.map((j) => (j.id === id ? { ...j, ...patch } : j)));
+
+	// Poll every unfinished job until it completes or fails
+	useEffect(() => {
+		if (!password) return;
+		let stopped = false;
+
+		const tick = async () => {
+			const pending = jobsRef.current.filter((j) => !isDone(j));
+			await Promise.all(
+				pending.map(async (job) => {
+					try {
+						const r = await api<Omit<Job, "prompt" | "createdAt">>(
+							`/api/result/${job.id}`,
+							password,
+						);
+						if (!stopped) {
+							updateJob(job.id, { status: r.status, outputs: r.outputs, error: r.error });
+						}
+					} catch (err) {
+						if ((err as { status?: number }).status === 401) lock();
+						// Other errors (network, 429, 5xx) are retried on the next tick
+					}
+				}),
+			);
+		};
+
+		tick();
+		const timer = setInterval(tick, POLL_MS);
+		return () => {
+			stopped = true;
+			clearInterval(timer);
+		};
+	}, [password, lock]);
+
+	const generate = async (e: React.FormEvent) => {
+		e.preventDefault();
+		if (!password || !prompt.trim()) return;
+		setSubmitting(true);
+		setError(null);
+		try {
+			const r = await api<Omit<Job, "prompt" | "createdAt">>("/api/generate", password, {
+				method: "POST",
+				body: JSON.stringify({ prompt }),
+			});
+			setJobs((list) => [
+				{ ...r, prompt: prompt.trim(), createdAt: Date.now() },
+				...list,
+			]);
+			setPrompt("");
+		} catch (err) {
+			if ((err as { status?: number }).status === 401) lock();
+			setError((err as Error).message);
+		} finally {
+			setSubmitting(false);
+		}
+	};
+
+	return (
+		<div className="min-h-screen bg-neutral-50 dark:bg-neutral-950 text-neutral-900 dark:text-neutral-100">
+			<div className="max-w-xl mx-auto px-4 pb-10 pt-[max(1rem,env(safe-area-inset-top))]">
+				<header className="flex items-center justify-between py-3">
+					<h1 className="text-lg font-semibold">Cosmos Predict 2.5</h1>
+					{password && (
+						<button onClick={lock} className="link text-sm">
+							Lock
+						</button>
+					)}
+				</header>
+
+				{!password ? (
+					<PasswordScreen onUnlock={unlock} />
+				) : (
+					<>
+						<form onSubmit={generate} className="flex flex-col gap-3">
+							<textarea
+								value={prompt}
+								onChange={(e) => setPrompt(e.target.value)}
+								rows={5}
+								maxLength={4000}
+								placeholder="Describe the scene, action and visual style…"
+								className="input resize-y"
 							/>
-							<path
-								fill="#F6821F"
-								d="M292.8,204.4c2.1-7.2,1.3-13.8-2.2-18.7c-3.2-4.5-8.6-7.1-15.1-7.4l-123.1-1.6c-0.8,0-1.5-0.4-1.9-1s-0.5-1.4-0.3-2.2c0.4-1.2,1.6-2.1,2.9-2.2l124.2-1.6c14.7-0.7,30.7-12.6,36.3-27.2l7.1-18.5c0.3-0.8,0.4-1.6,0.2-2.4c-8-36.2-40.3-63.2-78.9-63.2c-35.6,0-65.8,23-76.6,54.9c-7-5.2-15.9-8-25.5-7.1c-17.1,1.7-30.8,15.4-32.5,32.5c-0.4,4.4-0.1,8.7,0.9,12.7c-27.9,0.8-50.2,23.6-50.2,51.7c0,2.5,0.2,5,0.5,7.5c0.2,1.2,1.2,2.1,2.4,2.1h227.2c1.3,0,2.5-0.9,2.9-2.2L292.8,204.4z"
-							/>
-						</svg>
-						<div className="w-px h-4 bg-neutral-300/50 dark:bg-neutral-600/50" />
-						<h1 className="text-sm font-medium text-neutral-600 dark:text-neutral-400">
-							Workflows Starter Template
-						</h1>
-					</div>
+							{error && (
+								<p className="text-sm text-red-600 dark:text-red-400">{error}</p>
+							)}
+							<button
+								type="submit"
+								disabled={!prompt.trim() || submitting}
+								className="btn"
+							>
+								{submitting ? "Submitting…" : "Generate video"}
+							</button>
+							<p className="text-xs text-neutral-500 dark:text-neutral-400 text-center">
+								Each video is billed to your WaveSpeed account (about $0.25).
+							</p>
+						</form>
 
-					<a
-						href="https://developers.cloudflare.com/workflows"
-						target="_blank"
-						rel="noopener noreferrer"
-						className="text-xs font-medium text-neutral-600 dark:text-neutral-400 hover:text-neutral-900 dark:hover:text-neutral-200 transition-colors"
-					>
-						Documentation →
-					</a>
-				</div>
-			</header>
-
-			{/* Main content - unified canvas */}
-			<main className="flex-1 flex flex-col lg:flex-row overflow-hidden relative z-10">
-				{/* Left side - Code (responsive width) */}
-				<div className="w-full lg:w-[60%] overflow-hidden px-6 pb-6">
-					<CodeDisplay
-						currentStep={workflowState.currentStep}
-						workflowStatus={workflowState.workflowStatus}
-						onStartWorkflow={handleStartWorkflow}
-						isStarting={isStarting}
-					/>
-				</div>
-
-				{/* Right side - Diagram (responsive width) */}
-				<div className="flex-1 overflow-hidden px-6 lg:pl-8 lg:pr-6 pb-6">
-					<WorkflowDiagram
-						steps={WORKFLOW_STEPS}
-						stepStatuses={workflowState.stepStatuses}
-						currentStep={workflowState.currentStep}
-						instanceId={instanceId}
-						workflowStatus={workflowState.workflowStatus}
-						onStartWorkflow={handleStartWorkflow}
-						isStarting={isStarting}
-					/>
-				</div>
-			</main>
+						<ul className="flex flex-col gap-4 mt-6">
+							{jobs.map((job) => (
+								<JobCard
+									key={job.id}
+									job={job}
+									onRemove={() =>
+										setJobs((list) => list.filter((j) => j.id !== job.id))
+									}
+								/>
+							))}
+						</ul>
+					</>
+				)}
+			</div>
 		</div>
 	);
 }

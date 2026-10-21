@@ -7,6 +7,7 @@
 		font-family: Inter, system-ui, Avenir, Helvetica, Arial, sans-serif;
 		line-height: 1.5;
 		font-weight: 400;
+		color-scheme: light dark;
 
 		font-synthesis: none;
 		text-rendering: optimizeLegibility;
@@ -20,18 +21,25 @@
 	}
 }
 
-@layer utilities {
-	.font-mono {
-		font-family:
-			ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono",
-			"Courier New", monospace;
+@layer components {
+	/* 16px font stops iOS from zooming into inputs */
+	.input {
+		@apply w-full rounded-xl px-4 py-3 text-base bg-white dark:bg-neutral-900 ring-1 ring-neutral-300 dark:ring-neutral-700 focus:outline-none focus:ring-2 focus:ring-indigo-500;
 	}
 
-	.ring-glass {
-		@apply ring-1 ring-black/5 dark:ring-white/10;
+	.btn {
+		@apply w-full rounded-xl px-4 py-3 text-base font-medium bg-indigo-600 text-white active:bg-indigo-700 disabled:opacity-50;
 	}
 
-	.shadow-float {
-		@apply shadow-lg shadow-black/5 dark:shadow-black/20;
+	.card {
+		@apply rounded-2xl p-4 bg-white dark:bg-neutral-900 ring-1 ring-black/5 dark:ring-white/10;
+	}
+
+	.link {
+		@apply text-indigo-600 dark:text-indigo-400 underline-offset-2 hover:underline;
+	}
+
+	.spinner {
+		@apply inline-block w-4 h-4 rounded-full border-2 border-current border-t-transparent animate-spin;
 	}
 }
