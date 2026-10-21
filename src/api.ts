@@ -1,3 +1,11 @@
+import { buildSpaceInput, ENDPOINT, SPACE_API } from "./space";
+
+/**
+ * Static builds (GitHub Pages) have no Worker, so they call the Space directly;
+ * it allows cross-origin requests. The Worker build goes through /api.
+ */
+const DIRECT = import.meta.env.VITE_DIRECT === "1";
+
 export interface GenerateOptions {
 	prompt: string;
 	negativePrompt: string;
@@ -39,8 +47,38 @@ function cleanError(raw: string): string {
 	return raw && raw !== "null" ? raw : "The Space reported an error without details.";
 }
 
+function authHeaders(token: string): Record<string, string> {
+	if (!token) return {};
+	return DIRECT ? { Authorization: `Bearer ${token}` } : { "X-HF-Token": token };
+}
+
+/** Queues the job and returns the response plus its event id (when it worked). */
+async function startGeneration(
+	opts: GenerateOptions,
+	token: string,
+	signal: AbortSignal,
+): Promise<[Response, string | undefined]> {
+	const headers = { "Content-Type": "application/json", ...authHeaders(token) };
+	if (DIRECT) {
+		const res = await fetch(`${SPACE_API}/call/${ENDPOINT}`, {
+			method: "POST",
+			headers,
+			body: JSON.stringify({ data: buildSpaceInput(opts) }),
+			signal,
+		});
+		if (!res.ok) {
+			throw new Error(`The MOSS-Image Space returned ${res.status}. It may be restarting; try again in a minute.`);
+		}
+		const body = (await res.json()) as { event_id?: string };
+		return [res, body.event_id];
+	}
+	const res = await fetch("/api/generate", { method: "POST", headers, body: JSON.stringify(opts), signal });
+	const body = res.ok ? ((await res.clone().json().catch(() => ({}))) as { eventId?: string }) : {};
+	return [res, body.eventId];
+}
+
 /**
- * Queues a generation through the Worker and waits for the result by reading
+ * Queues a generation and waits for the result by reading
  * the Space's server-sent events stream.
  */
 export async function generateImage(
@@ -48,29 +86,16 @@ export async function generateImage(
 	token: string,
 	signal: AbortSignal,
 ): Promise<GenerateResult> {
-	const headers: Record<string, string> = { "Content-Type": "application/json" };
-	if (token) headers["X-HF-Token"] = token;
-
-	const start = await fetch("/api/generate", {
-		method: "POST",
-		headers,
-		body: JSON.stringify(opts),
-		signal,
-	});
-	const started = (await start.json().catch(() => ({}))) as {
-		eventId?: string;
-		error?: string;
-	};
-	if (!start.ok || !started.eventId) {
-		throw new Error(started.error ?? `Could not start generation (${start.status}).`);
+	const [startRes, eventId] = await startGeneration(opts, token, signal);
+	if (!eventId) {
+		const body = (await startRes.json().catch(() => ({}))) as { error?: string };
+		throw new Error(body.error ?? `Could not start generation (${startRes.status}).`);
 	}
 
-	const streamHeaders: Record<string, string> = {};
-	if (token) streamHeaders["X-HF-Token"] = token;
-	const stream = await fetch(`/api/generate/${started.eventId}`, {
-		headers: streamHeaders,
-		signal,
-	});
+	const stream = await fetch(
+		DIRECT ? `${SPACE_API}/call/${ENDPOINT}/${eventId}` : `/api/generate/${eventId}`,
+		{ headers: authHeaders(token), signal },
+	);
 	if (!stream.ok || !stream.body) {
 		throw new Error(`Lost connection to the Space (${stream.status}).`);
 	}
@@ -105,4 +130,4 @@ export async function generateImage(
 
 /** Same-origin URL for a generated image, so it can be saved or shared. */
 export const localImageUrl = (src: string) =>
-	`/api/image?src=${encodeURIComponent(src)}`;
+	DIRECT ? src : `/api/image?src=${encodeURIComponent(src)}`;

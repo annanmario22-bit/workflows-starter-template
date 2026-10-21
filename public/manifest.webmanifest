@@ -2,11 +2,11 @@
 	"name": "MOSS Image",
 	"short_name": "MOSS Image",
 	"description": "Generate images with the MOSS-Image model from your phone.",
-	"start_url": "/",
+	"start_url": "./",
 	"display": "standalone",
 	"background_color": "#0e1118",
 	"theme_color": "#3346d3",
 	"icons": [
-		{ "src": "/icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any maskable" }
+		{ "src": "icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any maskable" }
 	]
 }
