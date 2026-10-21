@@ -1,123 +1,390 @@
-import { useState, useEffect } from "react";
-import { WorkflowDiagram } from "./components/WorkflowDiagram";
-import { CodeDisplay } from "./components/CodeDisplay";
-import { BackgroundDots } from "./components/BackgroundDots";
-import { useWorkflowWebSocket } from "./hooks/useWorkflowWebSocket";
-import { WORKFLOW_STEPS } from "./types";
+import { useEffect, useRef, useState } from "react";
+import { generateImage, localImageUrl, type GenerateOptions } from "./api";
 
-function App() {
-	const [instanceId, setInstanceId] = useState<string | null>(null);
-	const [isStarting, setIsStarting] = useState(false);
-	const workflowState = useWorkflowWebSocket(instanceId);
+interface HistoryItem {
+	id: string;
+	prompt: string;
+	src: string;
+	width: number;
+	height: number;
+	model: "base" | "sft";
+	createdAt: number;
+}
 
-	useEffect(() => {
-		if (workflowState.workflowStatus === "completed") {
-			const timer = setTimeout(() => {
-				setInstanceId(null);
-			}, 1500);
-			return () => clearTimeout(timer);
-		}
-	}, [workflowState.workflowStatus]);
+const ASPECTS = [
+	{ label: "1:1", width: 1024, height: 1024 },
+	{ label: "3:4", width: 960, height: 1280 },
+	{ label: "2:3", width: 1024, height: 1536 },
+	{ label: "9:16", width: 864, height: 1536 },
+	{ label: "4:3", width: 1280, height: 960 },
+	{ label: "16:9", width: 1536, height: 864 },
+];
 
-	useEffect(() => {
-		if (
-			workflowState.workflowStatus === "running" &&
-			workflowState.currentStep
-		) {
-			setIsStarting(false);
-		}
-	}, [workflowState.workflowStatus, workflowState.currentStep]);
+const IDEAS = [
+	"A rain-soaked night market in Taipei, steam rising from food stalls, neon signs reflected in puddles, 35mm film photo",
+	"Minimalist travel poster for Kyoto with the words \"KYOTO IN AUTUMN\" in bold serif type, red maple leaves, flat colors",
+	"Macro photo of a dew-covered dandelion at sunrise, soft golden backlight, shallow depth of field",
+	"Cozy isometric illustration of a tiny bookshop with a cat sleeping in the window, warm evening light",
+];
 
-	const handleStartWorkflow = async () => {
-		setIsStarting(true);
-
+const store = {
+	get<T>(key: string, fallback: T): T {
 		try {
-			const response = await fetch("/api/workflow/start", {
-				method: "POST",
-			});
-
-			if (!response.ok) {
-				throw new Error("Failed to start workflow");
-			}
-
-			const data = await response.json();
-			setInstanceId(data.instanceId);
+			const raw = localStorage.getItem(key);
+			return raw ? (JSON.parse(raw) as T) : fallback;
 		} catch {
-			alert("Failed to start workflow. Please try again.");
-			setIsStarting(false);
+			return fallback;
 		}
-	};
+	},
+	set(key: string, value: unknown) {
+		try {
+			localStorage.setItem(key, JSON.stringify(value));
+		} catch {
+			// storage unavailable (private mode); keep working in memory
+		}
+	},
+};
+
+function useStored<T>(key: string, fallback: T) {
+	const [value, setValue] = useState<T>(() => store.get(key, fallback));
+	useEffect(() => store.set(key, value), [key, value]);
+	return [value, setValue] as const;
+}
+
+async function shareOrSave(item: HistoryItem) {
+	const url = localImageUrl(item.src);
+	try {
+		const blob = await (await fetch(url)).blob();
+		const ext = blob.type.split("/")[1] || "webp";
+		const file = new File([blob], `moss-image-${item.id}.${ext}`, { type: blob.type });
+		if (navigator.canShare?.({ files: [file] })) {
+			await navigator.share({ files: [file], text: item.prompt });
+			return;
+		}
+		const a = document.createElement("a");
+		a.href = URL.createObjectURL(blob);
+		a.download = file.name;
+		a.click();
+		setTimeout(() => URL.revokeObjectURL(a.href), 10_000);
+	} catch (err) {
+		if ((err as Error).name !== "AbortError") window.open(url, "_blank");
+	}
+}
+
+export default function App() {
+	const [prompt, setPrompt] = useStored("moss.prompt", IDEAS[0]);
+	const [aspect, setAspect] = useStored("moss.aspect", "3:4");
+	const [model, setModel] = useStored<"base" | "sft">("moss.model", "sft");
+	const [negative, setNegative] = useStored("moss.negative", "watermark, bad anatomy");
+	const [steps, setSteps] = useStored("moss.steps", 50);
+	const [cfg, setCfg] = useStored("moss.cfg", 3);
+	const [seed, setSeed] = useStored("moss.seed", -1);
+	const [token, setToken] = useStored("moss.token", "");
+	const [history, setHistory] = useStored<HistoryItem[]>("moss.history", []);
+
+	const [busy, setBusy] = useState(false);
+	const [elapsed, setElapsed] = useState(0);
+	const [error, setError] = useState("");
+	const [selected, setSelected] = useState<HistoryItem | null>(null);
+	const [settingsOpen, setSettingsOpen] = useState(false);
+	const abortRef = useRef<AbortController | null>(null);
+
+	const current = selected ?? history[0] ?? null;
+	const size = ASPECTS.find((a) => a.label === aspect) ?? ASPECTS[0];
+
+	useEffect(() => {
+		if (!busy) return;
+		const started = Date.now();
+		const timer = setInterval(() => setElapsed(Math.floor((Date.now() - started) / 1000)), 1000);
+		return () => clearInterval(timer);
+	}, [busy]);
+
+	async function onGenerate() {
+		if (!prompt.trim() || busy) return;
+		const controller = new AbortController();
+		abortRef.current = controller;
+		setBusy(true);
+		setElapsed(0);
+		setError("");
+		const opts: GenerateOptions = {
+			prompt,
+			negativePrompt: negative,
+			model,
+			width: size.width,
+			height: size.height,
+			steps,
+			cfg,
+			seed,
+		};
+		try {
+			const result = await generateImage(opts, token, controller.signal);
+			const items = result.images.map((src, i) => ({
+				id: `${Date.now().toString(36)}${i}`,
+				prompt,
+				src,
+				width: size.width,
+				height: size.height,
+				model,
+				createdAt: Date.now(),
+			}));
+			setHistory((h) => [...items, ...h].slice(0, 40));
+			setSelected(null);
+		} catch (err) {
+			if ((err as Error).name === "AbortError") return;
+			const message = (err as Error).message;
+			setError(
+				/quota|limit|GPU/i.test(message) && !token
+					? `${message} Adding your Hugging Face token in Settings gives you more quota and a higher queue priority.`
+					: message,
+			);
+		} finally {
+			setBusy(false);
+			abortRef.current = null;
+		}
+	}
 
 	return (
-		<div className="min-h-screen bg-neutral-50/30 dark:bg-neutral-950 flex flex-col relative">
-			{/* Background dots across entire page */}
-			<div className="absolute inset-0 text-neutral-200/50 dark:text-neutral-700/40 overflow-hidden">
-				<BackgroundDots />
-			</div>
-
-			{/* Minimal Integrated Header */}
-			<header className="px-6 pt-6 pb-4 relative z-10">
-				<div className="flex items-center justify-between">
-					<div className="flex items-center gap-3">
-						<svg
-							role="img"
-							viewBox="0 0 460 271.2"
-							aria-hidden="true"
-							className="h-5 w-auto opacity-90"
-						>
-							<path
-								fill="#FBAD41"
-								d="M328.6,125.6c-0.8,0-1.5,0.6-1.8,1.4l-4.8,16.7c-2.1,7.2-1.3,13.8,2.2,18.7c3.2,4.5,8.6,7.1,15.1,7.4l26.2,1.6c0.8,0,1.5,0.4,1.9,1c0.4,0.6,0.5,1.5,0.3,2.2c-0.4,1.2-1.6,2.1-2.9,2.2l-27.3,1.6c-14.8,0.7-30.7,12.6-36.3,27.2l-2,5.1c-0.4,1,0.3,2,1.4,2h93.8c1.1,0,2.1-0.7,2.4-1.8c1.6-5.8,2.5-11.9,2.5-18.2c0-37-30.2-67.2-67.3-67.2C330.9,125.5,329.7,125.5,328.6,125.6z"
-							/>
-							<path
-								fill="#F6821F"
-								d="M292.8,204.4c2.1-7.2,1.3-13.8-2.2-18.7c-3.2-4.5-8.6-7.1-15.1-7.4l-123.1-1.6c-0.8,0-1.5-0.4-1.9-1s-0.5-1.4-0.3-2.2c0.4-1.2,1.6-2.1,2.9-2.2l124.2-1.6c14.7-0.7,30.7-12.6,36.3-27.2l7.1-18.5c0.3-0.8,0.4-1.6,0.2-2.4c-8-36.2-40.3-63.2-78.9-63.2c-35.6,0-65.8,23-76.6,54.9c-7-5.2-15.9-8-25.5-7.1c-17.1,1.7-30.8,15.4-32.5,32.5c-0.4,4.4-0.1,8.7,0.9,12.7c-27.9,0.8-50.2,23.6-50.2,51.7c0,2.5,0.2,5,0.5,7.5c0.2,1.2,1.2,2.1,2.4,2.1h227.2c1.3,0,2.5-0.9,2.9-2.2L292.8,204.4z"
-							/>
-						</svg>
-						<div className="w-px h-4 bg-neutral-300/50 dark:bg-neutral-600/50" />
-						<h1 className="text-sm font-medium text-neutral-600 dark:text-neutral-400">
-							Workflows Starter Template
-						</h1>
-					</div>
-
-					<a
-						href="https://developers.cloudflare.com/workflows"
-						target="_blank"
-						rel="noopener noreferrer"
-						className="text-xs font-medium text-neutral-600 dark:text-neutral-400 hover:text-neutral-900 dark:hover:text-neutral-200 transition-colors"
-					>
-						Documentation →
-					</a>
-				</div>
+		<div className="app">
+			<header className="topbar">
+				<h1 className="brand">
+					MOSS<span>Image</span>
+				</h1>
+				<button
+					id="settings-button"
+					className="icon-btn"
+					onClick={() => setSettingsOpen(true)}
+					aria-label="Settings"
+				>
+					<svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" strokeWidth="1.8">
+						<path d="M4 7h10M18 7h2M4 17h4M12 17h8" strokeLinecap="round" />
+						<circle cx="16" cy="7" r="2" />
+						<circle cx="10" cy="17" r="2" />
+					</svg>
+					{!token && <span className="dot" aria-hidden="true" />}
+				</button>
 			</header>
 
-			{/* Main content - unified canvas */}
-			<main className="flex-1 flex flex-col lg:flex-row overflow-hidden relative z-10">
-				{/* Left side - Code (responsive width) */}
-				<div className="w-full lg:w-[60%] overflow-hidden px-6 pb-6">
-					<CodeDisplay
-						currentStep={workflowState.currentStep}
-						workflowStatus={workflowState.workflowStatus}
-						onStartWorkflow={handleStartWorkflow}
-						isStarting={isStarting}
-					/>
+			<main className="stage">
+				<div
+					className="frame"
+					style={{
+						aspectRatio: `${current?.width ?? size.width} / ${current?.height ?? size.height}`,
+					}}
+				>
+					{current && <img src={current.src} alt={current.prompt} />}
+					{!current && !busy && (
+						<p className="frame-empty">
+							Describe a scene below and tap Generate. Your images will appear here.
+						</p>
+					)}
+					{busy && (
+						<div className="developing" role="status">
+							<div className="spinner" />
+							<p>Generating · {elapsed}s</p>
+							<small>Free GPUs can queue for a minute or two.</small>
+						</div>
+					)}
 				</div>
+				{current && !busy && (
+					<div className="frame-actions">
+						<button className="chip" onClick={() => shareOrSave(current)}>
+							Save / share
+						</button>
+						<button className="chip" onClick={() => setPrompt(current.prompt)}>
+							Reuse prompt
+						</button>
+						<span className="meta">
+							{current.width}×{current.height} · {current.model.toUpperCase()}
+						</span>
+					</div>
+				)}
+				{error && (
+					<div className="error" role="alert">
+						{error}
+					</div>
+				)}
 
-				{/* Right side - Diagram (responsive width) */}
-				<div className="flex-1 overflow-hidden px-6 lg:pl-8 lg:pr-6 pb-6">
-					<WorkflowDiagram
-						steps={WORKFLOW_STEPS}
-						stepStatuses={workflowState.stepStatuses}
-						currentStep={workflowState.currentStep}
-						instanceId={instanceId}
-						workflowStatus={workflowState.workflowStatus}
-						onStartWorkflow={handleStartWorkflow}
-						isStarting={isStarting}
-					/>
-				</div>
+				{history.length > 1 && (
+					<section className="history" aria-label="Recent images">
+						<h2>Recent</h2>
+						<div className="strip">
+							{history.map((item) => (
+								<button
+									key={item.id}
+									className={`thumb ${current?.id === item.id ? "active" : ""}`}
+									onClick={() => setSelected(item)}
+									aria-label={item.prompt}
+								>
+									<img src={item.src} alt="" loading="lazy" />
+								</button>
+							))}
+						</div>
+					</section>
+				)}
 			</main>
+
+			<form
+				className="composer"
+				onSubmit={(e) => {
+					e.preventDefault();
+					onGenerate();
+				}}
+			>
+				<textarea
+					id="prompt"
+					value={prompt}
+					onChange={(e) => setPrompt(e.target.value)}
+					placeholder="A lighthouse on a cliff at dusk, oil painting…"
+					rows={3}
+					aria-label="Prompt"
+				/>
+				<div className="ideas">
+					{IDEAS.map((idea) => (
+						<button type="button" key={idea} className="idea" onClick={() => setPrompt(idea)}>
+							{idea.split(",")[0]}
+						</button>
+					))}
+				</div>
+				<div className="row">
+					<div className="aspects" role="radiogroup" aria-label="Aspect ratio">
+						{ASPECTS.map((a) => (
+							<button
+								type="button"
+								key={a.label}
+								role="radio"
+								aria-checked={aspect === a.label}
+								className={`aspect ${aspect === a.label ? "on" : ""}`}
+								onClick={() => setAspect(a.label)}
+							>
+								<i style={{ aspectRatio: `${a.width} / ${a.height}` }} />
+								{a.label}
+							</button>
+						))}
+					</div>
+				</div>
+				{busy ? (
+					<button type="button" className="generate cancel" onClick={() => abortRef.current?.abort()}>
+						Cancel
+					</button>
+				) : (
+					<button type="submit" className="generate" disabled={!prompt.trim()}>
+						Generate
+					</button>
+				)}
+			</form>
+
+			{settingsOpen && (
+				<div className="sheet-backdrop" onClick={() => setSettingsOpen(false)}>
+					<div
+						className="sheet"
+						role="dialog"
+						aria-label="Settings"
+						onClick={(e) => e.stopPropagation()}
+					>
+						<div className="sheet-head">
+							<h2>Settings</h2>
+							<button className="chip" onClick={() => setSettingsOpen(false)}>
+								Done
+							</button>
+						</div>
+
+						<label className="field">
+							<span>Hugging Face token</span>
+							<input
+								id="hf-token"
+								type="password"
+								value={token}
+								onChange={(e) => setToken(e.target.value.trim())}
+								placeholder="hf_…"
+								autoComplete="off"
+							/>
+							<small>
+								Without a token you share a small anonymous GPU quota. Create a free read token at{" "}
+								<a href="https://huggingface.co/settings/tokens" target="_blank" rel="noreferrer">
+									huggingface.co/settings/tokens
+								</a>
+								. It's stored only on this device.
+							</small>
+						</label>
+
+						<div className="field">
+							<span>Model</span>
+							<div className="segmented">
+								{(["sft", "base"] as const).map((m) => (
+									<button
+										key={m}
+										type="button"
+										className={model === m ? "on" : ""}
+										onClick={() => setModel(m)}
+									>
+										{m === "sft" ? "SFT (polished)" : "Base"}
+									</button>
+								))}
+							</div>
+						</div>
+
+						<label className="field">
+							<span>Negative prompt</span>
+							<input id="negative" value={negative} onChange={(e) => setNegative(e.target.value)} />
+						</label>
+
+						<label className="field">
+							<span>
+								Steps <b>{steps}</b>
+							</span>
+							<input
+								id="steps"
+								type="range"
+								min={10}
+								max={80}
+								value={steps}
+								onChange={(e) => setSteps(Number(e.target.value))}
+							/>
+							<small>Fewer steps are faster and use less quota. 50 is recommended.</small>
+						</label>
+
+						<label className="field">
+							<span>
+								Guidance (CFG) <b>{cfg.toFixed(1)}</b>
+							</span>
+							<input
+								id="cfg"
+								type="range"
+								min={1}
+								max={8}
+								step={0.5}
+								value={cfg}
+								onChange={(e) => setCfg(Number(e.target.value))}
+							/>
+						</label>
+
+						<label className="field">
+							<span>Seed</span>
+							<input
+								id="seed"
+								type="number"
+								inputMode="numeric"
+								value={seed}
+								onChange={(e) => setSeed(Number(e.target.value) || -1)}
+							/>
+							<small>-1 picks a random seed each time.</small>
+						</label>
+
+						{history.length > 0 && (
+							<button type="button" className="chip danger" onClick={() => setHistory([])}>
+								Clear recent images
+							</button>
+						)}
+						<p className="credit">
+							Powered by{" "}
+							<a href="https://openmoss.ai/MOSS-Image/" target="_blank" rel="noreferrer">
+								MOSS-Image
+							</a>{" "}
+							from OpenMOSS (Apache-2.0), running on their Hugging Face Space.
+						</p>
+					</div>
+				</div>
+			)}
 		</div>
 	);
 }
-
-export default App;

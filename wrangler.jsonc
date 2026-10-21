@@ -4,50 +4,21 @@
  */
 {
 	"$schema": "node_modules/wrangler/config-schema.json",
-	"name": "workflows-starter-template",
+	"name": "moss-image-mobile",
 	"main": "worker/index.ts",
 	"compatibility_date": "2025-10-08",
 	"assets": {
 		"directory": "./dist",
-		"not_found_handling": "single-page-application"
+		"not_found_handling": "single-page-application",
+		"run_worker_first": ["/api/*"]
 	},
 	"observability": {
 		"enabled": true
 	},
 	/**
-	 * Workflows
-	 * Define Workflows to orchestrate multi-step processes
-	 * https://developers.cloudflare.com/workflows/
+	 * Secrets
+	 * HF_TOKEN (optional): a Hugging Face token used for every request so
+	 * visitors don't need their own. Set with `npx wrangler secret put HF_TOKEN`.
 	 */
-	"workflows": [
-		{
-			"name": "my-workflow",
-			"binding": "MY_WORKFLOW",
-			"class_name": "MyWorkflow"
-		}
-	],
-	/**
-	 * Durable Objects
-	 * Used for WebSocket state management and real-time updates
-	 * https://developers.cloudflare.com/durable-objects/
-	 */
-	"durable_objects": {
-		"bindings": [
-			{
-				"name": "WORKFLOW_STATUS",
-				"class_name": "WorkflowStatusDO"
-			}
-		]
-	},
-	/**
-	 * Migrations
-	 * Required for Durable Objects
-	 */
-	"migrations": [
-		{
-			"tag": "v1",
-			"new_sqlite_classes": ["WorkflowStatusDO"]
-		}
-	],
 	"upload_source_maps": true
 }

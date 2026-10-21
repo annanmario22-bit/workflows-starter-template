@@ -1,123 +1,126 @@
-// Export the Workflow and Durable Object classes
-export { MyWorkflow } from "./workflow";
-export { WorkflowStatusDO } from "./durable-object";
-
 /**
- * Main Worker fetch handler
+ * MOSS-Image mobile backend
  *
- * Handles API routes and WebSocket upgrade requests for workflow management:
- * - POST /api/workflow/start - Create new workflow instance
- * - GET /api/workflow/status/:id - Get workflow status
- * - POST /api/workflow/event/:id - Send events to workflow
- * - GET /ws - WebSocket connection for real-time updates
+ * Proxies the public MOSS-Image Hugging Face Space so the phone UI can
+ * generate images without CORS issues, and attaches a Hugging Face token
+ * (ZeroGPU quota for anonymous callers runs out quickly):
+ * - POST /api/generate - Queue a generation, returns { eventId }
+ * - GET /api/generate/:id - Server-sent events stream for that generation
+ * - GET /api/image?src=... - Same-origin copy of a generated image (for saving)
  */
+
+export const SPACE_API = "https://openmoss-team-moss-image.hf.space/gradio_api";
+const ENDPOINT = "generated_images";
+
+export interface GenerateRequest {
+	prompt: string;
+	negativePrompt?: string;
+	model?: "base" | "sft";
+	width?: number;
+	height?: number;
+	steps?: number;
+	cfg?: number;
+	seed?: number;
+}
+
+const clamp = (value: unknown, min: number, max: number, fallback: number) => {
+	const n = Number(value);
+	if (!Number.isFinite(n)) return fallback;
+	return Math.min(max, Math.max(min, Math.round(n)));
+};
+
+/** Builds the positional `data` array the Space's /generated_images endpoint expects. */
+export function buildSpaceInput(req: GenerateRequest): unknown[] {
+	// Dimensions must be multiples of 16 for the model.
+	const dim = (v: unknown, fallback: number) =>
+		Math.round(clamp(v, 256, 2048, fallback) / 16) * 16;
+	const cfg = Number(req.cfg);
+
+	return [
+		req.prompt.slice(0, 16000),
+		(req.negativePrompt ?? "watermark, bad anatomy").slice(0, 2000),
+		req.model === "sft" ? "sft" : "base",
+		dim(req.width, 1024),
+		dim(req.height, 1024),
+		clamp(req.steps, 1, 100, 50),
+		Number.isFinite(cfg) ? Math.min(20, Math.max(0, cfg)) : 3,
+		5, // shift
+		clamp(req.seed, -1, 4294967295, -1),
+		1, // images per run
+		4096, // max text length
+		"22", // skip layers (uncond)
+		"", // SLG layers
+		0, // SLG scale
+		0, // skip start
+		1, // skip stop
+	];
+}
+
+function authHeaders(request: Request, env: Env): Record<string, string> {
+	const token = request.headers.get("X-HF-Token")?.trim() || env.HF_TOKEN;
+	return token ? { Authorization: `Bearer ${token}` } : {};
+}
+
 export default {
 	async fetch(request: Request, env: Env): Promise<Response> {
 		const url = new URL(request.url);
 
-		// API: Start a new workflow instance
-		if (url.pathname === "/api/workflow/start" && request.method === "POST") {
+		// API: Queue a new generation on the Space
+		if (url.pathname === "/api/generate" && request.method === "POST") {
+			let body: GenerateRequest;
 			try {
-				const instance = await env.MY_WORKFLOW.create({
-					params: {
-						timestamp: Date.now(),
-					},
-				});
-
-				return Response.json({
-					instanceId: instance.id,
-					message: "Workflow started successfully",
-				});
+				body = await request.json();
 			} catch {
+				return Response.json({ error: "Invalid JSON body" }, { status: 400 });
+			}
+			if (typeof body.prompt !== "string" || !body.prompt.trim()) {
+				return Response.json({ error: "Prompt is required" }, { status: 400 });
+			}
+
+			const upstream = await fetch(`${SPACE_API}/call/${ENDPOINT}`, {
+				method: "POST",
+				headers: { "Content-Type": "application/json", ...authHeaders(request, env) },
+				body: JSON.stringify({ data: buildSpaceInput(body) }),
+			});
+			if (!upstream.ok) {
 				return Response.json(
-					{ error: "Failed to start workflow" },
-					{ status: 500 },
+					{ error: `The MOSS-Image Space returned ${upstream.status}. It may be restarting; try again in a minute.` },
+					{ status: 502 },
 				);
 			}
+			const { event_id } = await upstream.json<{ event_id: string }>();
+			return Response.json({ eventId: event_id });
 		}
 
-		// API: Get workflow status
-		if (url.pathname.startsWith("/api/workflow/status/")) {
-			const instanceId = url.pathname.split("/").pop();
-			if (!instanceId) {
-				return Response.json(
-					{ error: "Instance ID required" },
-					{ status: 400 },
-				);
-			}
-
-			try {
-				const instance = await env.MY_WORKFLOW.get(instanceId);
-				const status = await instance.status();
-				return Response.json(status);
-			} catch {
-				return Response.json(
-					{ error: "Failed to get workflow status" },
-					{ status: 500 },
-				);
-			}
+		// API: Stream generation progress (server-sent events passthrough)
+		const streamMatch = url.pathname.match(/^\/api\/generate\/([\w-]+)$/);
+		if (streamMatch && request.method === "GET") {
+			const upstream = await fetch(`${SPACE_API}/call/${ENDPOINT}/${streamMatch[1]}`, {
+				headers: authHeaders(request, env),
+			});
+			return new Response(upstream.body, {
+				status: upstream.status,
+				headers: {
+					"Content-Type": "text/event-stream",
+					"Cache-Control": "no-cache",
+				},
+			});
 		}
 
-		// API: Send event to workflow instance
-		if (
-			url.pathname.startsWith("/api/workflow/event/") &&
-			request.method === "POST"
-		) {
-			const instanceId = url.pathname.split("/").pop();
-			if (!instanceId) {
-				return Response.json(
-					{ error: "Instance ID required" },
-					{ status: 400 },
-				);
+		// API: Same-origin copy of a generated image so the phone can save/share it
+		if (url.pathname === "/api/image" && request.method === "GET") {
+			const src = url.searchParams.get("src") ?? "";
+			if (!src.startsWith(`${SPACE_API}/file=`)) {
+				return Response.json({ error: "Unsupported image source" }, { status: 400 });
 			}
-
-			try {
-				const body = (await request.json()) as {
-					approved: boolean;
-					comment?: string;
-				};
-				const instance = await env.MY_WORKFLOW.get(instanceId);
-
-				await instance.sendEvent({
-					type: "user-approval",
-					payload: body,
-				});
-
-				return Response.json({
-					success: true,
-					message: "Event sent successfully",
-				});
-			} catch {
-				return Response.json(
-					{ error: "Failed to send event" },
-					{ status: 500 },
-				);
-			}
-		}
-
-		// WebSocket: Connect to workflow status updates
-		if (url.pathname === "/ws") {
-			const instanceId = url.searchParams.get("instanceId");
-			if (!instanceId) {
-				return new Response("instanceId query parameter required", {
-					status: 400,
-				});
-			}
-
-			const upgradeHeader = request.headers.get("Upgrade");
-			if (upgradeHeader !== "websocket") {
-				return new Response("Expected Upgrade: websocket", { status: 426 });
-			}
-
-			try {
-				const doId = env.WORKFLOW_STATUS.idFromName(instanceId);
-				const stub = env.WORKFLOW_STATUS.get(doId);
-				return stub.fetch(request);
-			} catch {
-				return new Response("Failed to establish WebSocket connection", {
-					status: 500,
-				});
-			}
+			const upstream = await fetch(src);
+			return new Response(upstream.body, {
+				status: upstream.status,
+				headers: {
+					"Content-Type": upstream.headers.get("Content-Type") ?? "image/webp",
+					"Cache-Control": "public, max-age=86400",
+				},
+			});
 		}
 
 		return Response.json({ error: "Not Found" }, { status: 404 });

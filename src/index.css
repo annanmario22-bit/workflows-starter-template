@@ -1,37 +1,468 @@
 @tailwind base;
-@tailwind components;
-@tailwind utilities;
 
-@layer base {
+/* One-screen phone layout: brand bar, image stage, composer pinned to the bottom. */
+:root {
+	--bg: #eef0f4;
+	--surface: #ffffff;
+	--ink: #161a24;
+	--muted: #5d6474;
+	--line: #d9dde6;
+	--accent: #3346d3;
+	--accent-ink: #ffffff;
+	--danger: #c23a3a;
+	--font-display: "Bricolage Grotesque", "Avenir Next", system-ui, sans-serif;
+	--font-body: "Figtree", system-ui, -apple-system, "Segoe UI", sans-serif;
+	color-scheme: light;
+}
+
+@media (prefers-color-scheme: dark) {
 	:root {
-		font-family: Inter, system-ui, Avenir, Helvetica, Arial, sans-serif;
-		line-height: 1.5;
-		font-weight: 400;
-
-		font-synthesis: none;
-		text-rendering: optimizeLegibility;
-		-webkit-font-smoothing: antialiased;
-		-moz-osx-font-smoothing: grayscale;
-	}
-
-	body {
-		margin: 0;
-		min-height: 100vh;
+		--bg: #0e1118;
+		--surface: #181c26;
+		--ink: #e9ebf1;
+		--muted: #969cab;
+		--line: #2a303d;
+		--accent: #7f8cff;
+		--accent-ink: #0e1118;
+		--danger: #ff8a80;
+		color-scheme: dark;
 	}
 }
 
-@layer utilities {
-	.font-mono {
-		font-family:
-			ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono",
-			"Courier New", monospace;
-	}
+html,
+body,
+#root {
+	height: 100%;
+}
 
-	.ring-glass {
-		@apply ring-1 ring-black/5 dark:ring-white/10;
-	}
+body {
+	margin: 0;
+	background: var(--bg);
+	color: var(--ink);
+	font-family: var(--font-body);
+	font-size: 15px;
+	line-height: 1.45;
+	-webkit-font-smoothing: antialiased;
+	-webkit-tap-highlight-color: transparent;
+}
 
-	.shadow-float {
-		@apply shadow-lg shadow-black/5 dark:shadow-black/20;
+button {
+	font: inherit;
+	color: inherit;
+	cursor: pointer;
+}
+
+:focus-visible {
+	outline: 2px solid var(--accent);
+	outline-offset: 2px;
+}
+
+a {
+	color: var(--accent);
+}
+
+.app {
+	display: flex;
+	flex-direction: column;
+	height: 100%;
+	max-width: 640px;
+	margin: 0 auto;
+}
+
+.topbar {
+	display: flex;
+	align-items: center;
+	justify-content: space-between;
+	padding: calc(env(safe-area-inset-top, 0px) + 10px) max(16px, env(safe-area-inset-right, 0px)) 6px
+		max(16px, env(safe-area-inset-left, 0px));
+}
+
+.brand {
+	font-family: var(--font-display);
+	font-size: 22px;
+	font-weight: 800;
+	letter-spacing: -0.02em;
+}
+
+.brand span {
+	font-weight: 400;
+	margin-left: 4px;
+	color: var(--accent);
+}
+
+.icon-btn {
+	position: relative;
+	display: grid;
+	place-items: center;
+	width: 42px;
+	height: 42px;
+	border-radius: 50%;
+	border: 1px solid var(--line);
+	background: var(--surface);
+}
+
+.dot {
+	position: absolute;
+	top: 7px;
+	right: 7px;
+	width: 8px;
+	height: 8px;
+	border-radius: 50%;
+	background: var(--accent);
+}
+
+.stage {
+	flex: 1;
+	min-height: 0;
+	overflow-y: auto;
+	display: flex;
+	flex-direction: column;
+	gap: 10px;
+	padding: 6px max(16px, env(safe-area-inset-right, 0px)) 12px max(16px, env(safe-area-inset-left, 0px));
+}
+
+.frame {
+	position: relative;
+	width: 100%;
+	max-width: 100%;
+	max-height: 58vh;
+	margin: 0 auto;
+	border-radius: 14px;
+	overflow: hidden;
+	background: var(--surface);
+	border: 1px solid var(--line);
+	display: grid;
+	place-items: center;
+	transition: aspect-ratio 0.3s ease;
+}
+
+.frame img {
+	width: 100%;
+	height: 100%;
+	object-fit: contain;
+}
+
+.frame-empty {
+	max-width: 24ch;
+	text-align: center;
+	color: var(--muted);
+	padding: 16px;
+}
+
+.developing {
+	position: absolute;
+	inset: 0;
+	display: grid;
+	place-content: center;
+	justify-items: center;
+	gap: 6px;
+	text-align: center;
+	background: color-mix(in srgb, var(--surface) 82%, transparent);
+	backdrop-filter: blur(6px);
+	font-variant-numeric: tabular-nums;
+}
+
+.developing p {
+	font-weight: 600;
+}
+
+.developing small {
+	color: var(--muted);
+}
+
+.spinner {
+	width: 34px;
+	height: 34px;
+	border-radius: 50%;
+	border: 3px solid var(--line);
+	border-top-color: var(--accent);
+	animation: spin 0.9s linear infinite;
+}
+
+@keyframes spin {
+	to {
+		transform: rotate(360deg);
 	}
+}
+
+@media (prefers-reduced-motion: reduce) {
+	.spinner {
+		animation-duration: 3s;
+	}
+	.frame {
+		transition: none;
+	}
+}
+
+.frame-actions {
+	display: flex;
+	flex-wrap: wrap;
+	align-items: center;
+	gap: 8px;
+}
+
+.meta {
+	margin-left: auto;
+	color: var(--muted);
+	font-size: 12px;
+	font-variant-numeric: tabular-nums;
+}
+
+.chip {
+	padding: 7px 13px;
+	border-radius: 999px;
+	border: 1px solid var(--line);
+	background: var(--surface);
+	font-size: 13px;
+	font-weight: 600;
+}
+
+.chip.danger {
+	color: var(--danger);
+	align-self: flex-start;
+}
+
+.error {
+	padding: 10px 12px;
+	border-radius: 10px;
+	border: 1px solid var(--danger);
+	color: var(--danger);
+	background: color-mix(in srgb, var(--danger) 8%, var(--surface));
+	font-size: 14px;
+}
+
+.history h2 {
+	font-size: 11px;
+	font-weight: 700;
+	letter-spacing: 0.08em;
+	text-transform: uppercase;
+	color: var(--muted);
+	margin-bottom: 6px;
+}
+
+.strip {
+	display: flex;
+	gap: 8px;
+	overflow-x: auto;
+	padding-bottom: 4px;
+	scroll-snap-type: x proximity;
+}
+
+.thumb {
+	flex: 0 0 64px;
+	height: 64px;
+	padding: 0;
+	border-radius: 10px;
+	overflow: hidden;
+	border: 2px solid transparent;
+	background: var(--surface);
+	scroll-snap-align: start;
+}
+
+.thumb.active {
+	border-color: var(--accent);
+}
+
+.thumb img {
+	width: 100%;
+	height: 100%;
+	object-fit: cover;
+}
+
+.composer {
+	display: flex;
+	flex-direction: column;
+	gap: 10px;
+	padding: 12px max(16px, env(safe-area-inset-right, 0px)) calc(env(safe-area-inset-bottom, 0px) + 12px)
+		max(16px, env(safe-area-inset-left, 0px));
+	background: var(--surface);
+	border-top: 1px solid var(--line);
+	border-radius: 18px 18px 0 0;
+}
+
+.composer textarea {
+	width: 100%;
+	resize: none;
+	border: 1px solid var(--line);
+	border-radius: 12px;
+	padding: 10px 12px;
+	background: var(--bg);
+	color: var(--ink);
+	/* 16px keeps iOS from zooming in on focus */
+	font-size: 16px;
+	line-height: 1.4;
+}
+
+.ideas,
+.aspects {
+	display: flex;
+	gap: 6px;
+	overflow-x: auto;
+	scrollbar-width: none;
+}
+
+.ideas::-webkit-scrollbar,
+.aspects::-webkit-scrollbar {
+	display: none;
+}
+
+.idea {
+	flex: none;
+	padding: 5px 10px;
+	border-radius: 999px;
+	border: 1px dashed var(--line);
+	background: transparent;
+	color: var(--muted);
+	font-size: 12px;
+	white-space: nowrap;
+}
+
+.aspect {
+	flex: none;
+	display: flex;
+	align-items: center;
+	gap: 6px;
+	padding: 6px 10px;
+	border-radius: 10px;
+	border: 1px solid var(--line);
+	background: transparent;
+	font-size: 13px;
+	font-weight: 600;
+	font-variant-numeric: tabular-nums;
+}
+
+.aspect i {
+	display: block;
+	height: 14px;
+	max-width: 24px;
+	border: 1.5px solid currentColor;
+	border-radius: 2px;
+}
+
+.aspect.on {
+	border-color: var(--accent);
+	color: var(--accent);
+}
+
+.generate {
+	height: 50px;
+	border: none;
+	border-radius: 14px;
+	background: var(--accent);
+	color: var(--accent-ink);
+	font-family: var(--font-display);
+	font-size: 17px;
+	font-weight: 700;
+}
+
+.generate:disabled {
+	opacity: 0.45;
+}
+
+.generate.cancel {
+	background: transparent;
+	color: var(--ink);
+	border: 1px solid var(--line);
+}
+
+.sheet-backdrop {
+	position: fixed;
+	inset: 0;
+	z-index: 20;
+	display: flex;
+	align-items: flex-end;
+	justify-content: center;
+	background: rgb(0 0 0 / 0.4);
+}
+
+.sheet {
+	width: 100%;
+	max-width: 640px;
+	max-height: 88%;
+	overflow-y: auto;
+	display: flex;
+	flex-direction: column;
+	gap: 18px;
+	padding: 16px max(16px, env(safe-area-inset-right, 0px)) calc(env(safe-area-inset-bottom, 0px) + 20px)
+		max(16px, env(safe-area-inset-left, 0px));
+	background: var(--surface);
+	border-radius: 20px 20px 0 0;
+}
+
+.sheet-head {
+	display: flex;
+	align-items: center;
+	justify-content: space-between;
+}
+
+.sheet-head h2 {
+	font-family: var(--font-display);
+	font-size: 20px;
+	font-weight: 700;
+}
+
+.field {
+	display: flex;
+	flex-direction: column;
+	gap: 6px;
+}
+
+.field > span {
+	display: flex;
+	justify-content: space-between;
+	font-weight: 600;
+	font-size: 14px;
+}
+
+.field b {
+	font-variant-numeric: tabular-nums;
+	color: var(--accent);
+}
+
+.field small {
+	color: var(--muted);
+	font-size: 12.5px;
+}
+
+.field input:not([type="range"]) {
+	width: 100%;
+	border: 1px solid var(--line);
+	border-radius: 10px;
+	padding: 10px 12px;
+	background: var(--bg);
+	color: var(--ink);
+	font-size: 16px;
+}
+
+.field input[type="range"] {
+	accent-color: var(--accent);
+}
+
+.segmented {
+	display: grid;
+	grid-template-columns: 1fr 1fr;
+	gap: 4px;
+	padding: 4px;
+	border-radius: 12px;
+	background: var(--bg);
+}
+
+.segmented button {
+	padding: 8px;
+	border: none;
+	border-radius: 9px;
+	background: transparent;
+	font-weight: 600;
+	font-size: 14px;
+}
+
+.segmented button.on {
+	background: var(--surface);
+	color: var(--accent);
+	box-shadow: 0 1px 3px rgb(0 0 0 / 0.12);
+}
+
+.credit {
+	color: var(--muted);
+	font-size: 12.5px;
 }

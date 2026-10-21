@@ -1,39 +1,49 @@
-# Cloudflare Workflows Starter Template
+# MOSS Image (mobile)
 
-[![Deploy to Cloudflare](https://deploy.workers.cloudflare.com/button)](https://deploy.workers.cloudflare.com/?url=https://github.com/cloudflare/templates/tree/main/workflows-starter-template)
+A phone-friendly web app for generating images with [MOSS-Image](https://openmoss.ai/MOSS-Image/), the open text-to-image model from OpenMOSS. It runs on a Cloudflare Worker that forwards requests to the official [MOSS-Image Hugging Face Space](https://huggingface.co/spaces/OpenMOSS-Team/MOSS-Image), so there is no GPU to host yourself.
 
-<!-- dash-content-start -->
+Features:
 
-A real-time, interactive demonstration of [Cloudflare Workflows](https://developers.cloudflare.com/workflows) with live updates via WebSockets and Durable Objects. This template showcases durable multi-step workflows with time-based delays, event-driven pauses, and real-time status visualization.
+- Prompt box with example ideas, aspect-ratio presets (1:1 to 16:9)
+- SFT or Base model, steps, guidance, seed and negative prompt in Settings
+- Recent images strip, plus Save / share through your phone's share sheet
+- Installable: on iPhone use Share → Add to Home Screen; on Android, Install app
 
-<!-- dash-content-end -->
+## Hugging Face token
 
-![Cloudflare Workflows Starter Template](assets/template-screenshot.png)
+The Space runs on ZeroGPU, which gives anonymous callers a very small quota. To generate more than a couple of images, use a free Hugging Face token ([create one here](https://huggingface.co/settings/tokens), "Read" access is enough). Either:
 
-## Getting Started
+- paste it into the app's **Settings** (stored only in that browser), or
+- set it on the Worker for everyone who uses your deployment:
 
-### Installation
+```bash
+npx wrangler secret put HF_TOKEN
+```
+
+For local development, copy `.dev.vars.example` to `.dev.vars` and fill in the token.
+
+## Development
 
 ```bash
 npm install
+npm run dev     # http://localhost:5173
+npm test        # run `npm run build` once first
 ```
 
-### Development
-
-```bash
-npm run dev
-```
-
-Visit `http://localhost:5173` to see the interactive demo.
-
-### Deployment
+## Deployment
 
 ```bash
 npm run deploy
 ```
 
-## Learn More
+Then open the `*.workers.dev` URL on your phone.
 
-- [Cloudflare Workflows Documentation](https://developers.cloudflare.com/workflows)
-- [Durable Objects Documentation](https://developers.cloudflare.com/durable-objects)
-- [Workers Documentation](https://developers.cloudflare.com/workers)
+## How it works
+
+| Route | Purpose |
+| --- | --- |
+| `POST /api/generate` | Queues a generation on the Space's `/generated_images` endpoint |
+| `GET /api/generate/:id` | Streams the Space's server-sent events until the image is ready |
+| `GET /api/image?src=` | Same-origin copy of a generated image, used for saving and sharing |
+
+MOSS-Image weights are Apache-2.0. Generated image links come from the Space and can expire after a while, so save the ones you want to keep.
